@@ -9,6 +9,13 @@
 #include "intersections.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <sstream>
+#include <curand.h>
+
+__host__ __device__ float rand(glm::vec3 co)
+{
+    float a_;
+    return modf((float)(sin(dot(co, glm::vec3(12415.9898, 7318.233, 16126.2512))) * 43758.5453), &a_);
+}
 
 __device__ __host__ void
 setColor(unsigned char *image, glm::vec4 color, int x, int y, int width, int height)
@@ -20,7 +27,33 @@ setColor(unsigned char *image, glm::vec4 color, int x, int y, int width, int hei
     image[((y * width) + x) * 4 + 3] = max(min(color.w * 255, 255.0), 0.0);
 }
 
-__host__ __device__ glm::vec3 trace(glm::vec3 start, glm::vec3 direction, Object *objects, size_t num_objects)
+__host__ __device__ glm::vec3 sample(float u1, float u2)
+{
+
+    float r = sqrt(u1);
+    float theta = 2 * M_PI * u2;
+
+    float x = r * cos(theta);
+    float y = r * sin(theta);
+
+    return glm::vec3(x, y, sqrt(max(0.0f, 1.0 - u1)));
+}
+
+__host__ __device__ glm::vec3 rotate_towards(glm::vec3 reference, glm::vec3 target)
+{
+
+    if (reference.y == 1.0)
+    {
+        return glm::vec3(1.0, 0.0, 0.0) * target.y + glm::vec3(0.0, 1.0, 0.0) * target.x + reference * target.z;
+    }
+
+    glm::vec3 right = glm::cross(reference, glm::vec3(0.0, 1.0, 0.0));
+    glm::vec3 up = glm::cross(right, reference);
+
+    return right * target.x + up * target.y + reference * target.z;
+}
+
+__host__ __device__ glm::vec3 trace(glm::vec3 start, glm::vec3 direction, Object *objects, size_t num_objects, float seed)
 {
 
     glm::vec3 accumulated_light = glm::vec3(0.0);
@@ -28,11 +61,25 @@ __host__ __device__ glm::vec3 trace(glm::vec3 start, glm::vec3 direction, Object
 
     for (int bounce = 0; bounce < 8; ++bounce)
     {
-        // auto hit = intersectMany(objects, num_objects, start, direction, );
+        auto hit = intersectMany(objects, num_objects, start, direction);
+
+        if (!hit.hit)
+            break;
+
+        bounced_light *= hit.object->color;
+
+        auto shadow_hit = intersectMany(objects, num_objects, hit.position + hit.normal * 0.00001f, glm::vec3(0.0, 1.0, 0.0));
+
+        accumulated_light += bounced_light * (shadow_hit.hit ? 0.0f : glm::dot(hit.normal, glm::vec3(0.0, 1.0, 0.0)));
+
+        start = hit.position;
+        direction = rotate_towards(hit.normal, sample(rand(hit.position + seed), rand(glm::vec3(hit.position.x + seed, rand(hit.position + seed), hit.position.z))));
     }
+
+    return accumulated_light;
 }
 
-__host__ __device__ void render(unsigned char *image, glm::mat4 view_matrix, Object *objects, size_t num_objects, int x, int y, int width, int height)
+__host__ __device__ void render(unsigned char *image, glm::mat4 view_matrix, Object *objects, size_t num_objects, int x, int y, int width, int height, double time)
 {
 
     double aspect_ratio = (float)width / height;
@@ -43,10 +90,15 @@ __host__ __device__ void render(unsigned char *image, glm::mat4 view_matrix, Obj
     glm::vec3 direction = glm::normalize(glm::mat3(glm::inverse(view_matrix)) * glm::vec3(-x_scaled, -y_scaled, -1.0));
     glm::vec3 start = glm::vec3(view_matrix[3]);
 
-    auto hit = intersectMany(objects, num_objects, start, direction);
-    auto shadow = intersectMany(objects, num_objects, hit.position + hit.normal * glm::vec3(0.01), glm::vec3(0.0, 1.0, 0.0));
+    glm::vec3 color = glm::vec3(0.0);
 
-    setColor(image, glm::vec4(hit.hit ? hit.object->color * dot(hit.normal, glm::vec3(0.0, 1.0, 0.0)) * glm::vec3(shadow.hit ? 0.1 : 1.0) : glm::vec3(0.0), 1.0), x, y, width, height);
+    for (int i = 0; i < 10; i++)
+    {
+
+        color += trace(start, direction, objects, num_objects, i + time);
+    }
+
+    setColor(image, glm::vec4(color / 10.0f, 1.0), x, y, width, height);
 }
 
 __global__ void makeWhite(unsigned char *image, glm::mat4 view_matrix, Object *objects, size_t num_objects, int width, int height, double time)
@@ -58,7 +110,7 @@ __global__ void makeWhite(unsigned char *image, glm::mat4 view_matrix, Object *o
     if (x > width || y > height)
         return;
 
-    render(image, view_matrix, objects, num_objects, x, y, width, height);
+    render(image, view_matrix, objects, num_objects, x, y, width, height, time);
 }
 
 int main(int argc, char **argv)
@@ -104,7 +156,7 @@ int main(int argc, char **argv)
 
     objects[0] = Object{
         glm::mat4(1.0),
-        glm::vec3(1.0),
+        glm::vec3(1.0, 0.1, 0.1),
         false,
         ObjectType::Sphere};
     objects[1] = Object{
@@ -127,6 +179,9 @@ int main(int argc, char **argv)
     sf::Font font;
     font.loadFromFile("/usr/share/fonts/opentype/roboto/slab/RobotoSlab-Blod.otd");
 
+    window.setMouseCursorGrabbed(true);
+    sf::Mouse::setPosition(window.getPosition() + sf::Vector2i(window.getSize()) / 2);
+
     while (window.isOpen())
     {
         sf::Event event;
@@ -138,8 +193,11 @@ int main(int argc, char **argv)
             if (event.type == sf::Event::MouseMoved)
             {
 
-                view_matrix = glm::rotate(view_matrix, ((float)event.mouseMove.x - (float)last_x) / 100.0f, glm::vec3(0.0, 1.0, 0.0));
+                view_matrix = glm::rotate(view_matrix, -((float)event.mouseMove.x - (float)last_x) * 0.005f, glm::vec3(0.0, 1.0, 0.0));
+                view_matrix = glm::rotate(view_matrix, ((float)event.mouseMove.y - (float)last_y) * 0.005f, glm::vec3(glm::inverse(view_matrix)[0]));
+
                 last_x = event.mouseMove.x;
+                last_y = event.mouseMove.y;
             }
         }
 
