@@ -20,6 +20,18 @@ setColor(unsigned char *image, glm::vec4 color, int x, int y, int width, int hei
     image[((y * width) + x) * 4 + 3] = max(min(color.w * 255, 255.0), 0.0);
 }
 
+__host__ __device__ glm::vec3 trace(glm::vec3 start, glm::vec3 direction, Object *objects, size_t num_objects)
+{
+
+    glm::vec3 accumulated_light = glm::vec3(0.0);
+    glm::vec3 bounced_light = glm::vec3(1.0);
+
+    for (int bounce = 0; bounce < 8; ++bounce)
+    {
+        // auto hit = intersectMany(objects, num_objects, start, direction, );
+    }
+}
+
 __host__ __device__ void render(unsigned char *image, glm::mat4 view_matrix, Object *objects, size_t num_objects, int x, int y, int width, int height)
 {
 
@@ -31,16 +43,10 @@ __host__ __device__ void render(unsigned char *image, glm::mat4 view_matrix, Obj
     glm::vec3 direction = glm::normalize(glm::mat3(glm::inverse(view_matrix)) * glm::vec3(-x_scaled, -y_scaled, -1.0));
     glm::vec3 start = glm::vec3(view_matrix[3]);
 
-    float t_ = 0.0;
-    Object *hit_object;
-    glm::vec3 normal;
-    glm::vec3 hit_position;
+    auto hit = intersectMany(objects, num_objects, start, direction);
+    auto shadow = intersectMany(objects, num_objects, hit.position + hit.normal * glm::vec3(0.01), glm::vec3(0.0, 1.0, 0.0));
 
-    bool hit = intersectMany(objects, num_objects, start, direction, t_, hit_object, normal, hit_position);
-
-    bool shadow = intersectMany(objects, num_objects, hit_position + normal * glm::vec3(0.01), glm::vec3(0.0, 1.0, 0.0));
-
-    setColor(image, glm::vec4(hit ? hit_object->color * dot(normal, glm::vec3(0.0, 1.0, 0.0)) * glm::vec3(shadow ? 0.1 : 1.0) : glm::vec3(0.0), 1.0), x, y, width, height);
+    setColor(image, glm::vec4(hit.hit ? hit.object->color * dot(hit.normal, glm::vec3(0.0, 1.0, 0.0)) * glm::vec3(shadow.hit ? 0.1 : 1.0) : glm::vec3(0.0), 1.0), x, y, width, height);
 }
 
 __global__ void makeWhite(unsigned char *image, glm::mat4 view_matrix, Object *objects, size_t num_objects, int width, int height, double time)
@@ -61,21 +67,21 @@ int main(int argc, char **argv)
     cudaSetDevice(0);
 
     sf::Clock clock;
+    int width = 1280;
+    int height = 720;
 
-    sf::RenderWindow window(sf::VideoMode(1280, 720), "Hello!");
+    sf::RenderWindow window(sf::VideoMode(width, height), "Hello!");
     sf::Texture render_texture;
-    render_texture.create(1280, 720);
+    render_texture.create(width, height);
 
     window.clear(sf::Color(255, 255, 255, 255));
     window.display();
 
     sf::Sprite image(render_texture);
-    image.setPosition(sf::Vector2f(1280 / 2, 720 / 2));
+    image.setPosition(sf::Vector2f(width / 2, height / 2));
     image.setOrigin(sf::Vector2f(render_texture.getSize()) / 2.f);
 
     render_texture.update(window);
-    int width = 1280;
-    int height = 720;
 
     size_t image_size = width * height * sizeof(char) * 4;
 
@@ -99,10 +105,12 @@ int main(int argc, char **argv)
     objects[0] = Object{
         glm::mat4(1.0),
         glm::vec3(1.0),
+        false,
         ObjectType::Sphere};
     objects[1] = Object{
         glm::translate(glm::mat4(1.0), glm::vec3(0.0, -1.0, 0.0)),
         glm::vec3(1.0),
+        false,
         ObjectType::Plane};
 
     Object *d_objects;
@@ -145,7 +153,7 @@ int main(int argc, char **argv)
         // {
         //     for (int y = 0; y < height; ++y)
         //     {
-        //         render(h_image, view_matrix, objects, 1, x, y, width, height);
+        //         render(h_image, view_matrix, objects, num_objects, x, y, width, height);
         //     }
         // }
 
@@ -159,8 +167,8 @@ int main(int argc, char **argv)
 
         window.display();
 
-        fps_timer.restart();
         last_time = fps_timer.getElapsedTime().asSeconds();
+        fps_timer.restart();
     }
 
     return 0;

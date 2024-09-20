@@ -28,5 +28,5 @@ target_link_libraries(${PROJECT_NAME} PRIVATE GL sfml-graphics sfml-system sfml-
 target_link_libraries(${PROJECT_NAME} PRIVATE glm::glm)
 target_link_libraries(${PROJECT_NAME} PRIVATE fmt::fmt)
 
-
-
+add_compile_options(-fsanitize=address)
+add_link_options(-fsanitize=address)

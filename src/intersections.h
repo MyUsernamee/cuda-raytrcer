@@ -21,6 +21,7 @@ struct Object
 
     glm::mat4 transform;
     glm::vec3 color;
+    bool is_light;
     ObjectType type;
 
     glm::vec3 getPosition()
@@ -29,110 +30,124 @@ struct Object
     }
 };
 
-__host__ __device__ bool intersectSphere(glm::vec3 start, glm::vec3 direction, glm::vec3 position, float radius, float &t0, float &t1, glm::vec3 &normal, glm::vec3 &hit_position)
+struct IntersectionData
 {
-    glm::vec3 L = position - start;
+    float t0;
+    float t1;
+    glm::vec3 normal;
+    glm::vec3 position;
+    bool hit;
+};
+
+struct HitData
+{
+    float t;
+    glm::vec3 normal;
+    glm::vec3 position;
+    Object *object;
+    bool hit;
+};
+
+__host__ __device__ IntersectionData intersectSphere(glm::vec3 start, glm::vec3 direction)
+{
+
+    IntersectionData id;
+
+    glm::vec3 L = -start;
     float tca = dot(L, direction);
     if (tca < 0)
-        return false;
+    {
+        id.hit = false;
+        return id;
+    }
     float d2 = dot(L, L) - tca * tca;
-    if (d2 > radius * radius)
-        return false;
-    float thc = sqrt(radius * radius - d2);
-    t0 = tca - thc;
-    t1 = tca + thc;
+    if (d2 > 1)
+    {
+        id.hit = false;
+        return id;
+    }
+    float thc = sqrt(1 - d2);
+    id.t0 = tca - thc;
+    id.position = start + direction * id.t0;
+    id.normal = normalize(id.position);
+    id.hit = true;
 
-    hit_position = position + direction * t0;
-    normal = normalize(hit_position - position);
-
-    return true;
+    return id;
 }
 
-__host__ __device__ bool intersectPlane(glm::vec3 start, glm::vec3 direction, glm::vec3 normal, float offset, float &t0, glm::vec3 &position)
+__host__ __device__ IntersectionData intersectPlane(glm::vec3 start, glm::vec3 direction)
 {
-    double L = dot(start, normal) + offset;
-    double B = dot(normal, direction);
+
+    IntersectionData id;
+
+    double L = dot(start, glm::vec3(0.0, 1.0, 0.0));
+    double B = dot(glm::vec3(0.0, 1.0, 0.0), direction);
 
     if (B == 0)
-        return false;
+    {
+        id.hit = false;
+        return id;
+    }
 
-    t0 = L / B;
-    position = start + direction * t0;
-    return t0 > 0;
+    id.normal = glm::vec3(0.0, 1.0, 0.0);
+    id.hit = true;
+    id.t0 = L / B;
+    id.t1 = id.t0;
+    id.position = start + direction * id.t0;
+    id.hit = id.t0 > 0;
+    return id;
 }
 
-__host__ __device__ bool intersectObject(Object object, glm::vec3 start, glm::vec3 direction, float &t, glm::vec3 &normal, glm::vec3 &position)
+__host__ __device__ IntersectionData intersectObject(Object object, glm::vec3 start, glm::vec3 direction)
 {
     glm::vec4 local_start = (object.transform) * glm::vec4(start, 1.0);
     direction = glm::mat3(object.transform) * direction;
 
-    float _t = 0;
-    bool hit = false;
+    IntersectionData hit;
     switch (object.type)
     {
 
     case ObjectType::Sphere:
 
-        hit = intersectSphere(local_start, direction, glm::vec3(0.0), 1.0, t, _t, normal, position);
+        hit = intersectSphere(local_start, direction);
         break;
 
     case ObjectType::Plane:
 
-        hit = intersectPlane(local_start, direction, glm::vec3(0.0, 1.0, 0.0), 0.0, t, position);
-        normal = glm::vec3(0.0, 1.0, 0.0);
+        hit = intersectPlane(local_start, direction);
         break;
     }
 
-    normal = glm::inverse(glm::mat3(object.transform)) * normal;
-    position = glm::vec3(glm::inverse(object.transform) * glm::vec4(position, 1.0));
+    hit.normal = glm::inverse(glm::mat3(object.transform)) * hit.normal;
+    hit.position = glm::vec3(glm::inverse(object.transform) * glm::vec4(hit.position, 1.0));
     return hit;
 }
 
-__host__ __device__ bool intersectObject(Object object, glm::vec3 start, glm::vec3 direction)
+__host__ __device__ HitData intersectMany(Object *objects, size_t count, glm::vec3 start, glm::vec3 direction)
 {
 
-    float t_;
-    glm::vec3 normal_;
-    glm::vec3 position_;
-
-    return intersectObject(object, start, direction, t_, normal_, position_);
-}
-
-__host__ __device__ bool intersectMany(Object *objects, size_t count, glm::vec3 start, glm::vec3 direction, float &t, Object *&hit_object, glm::vec3 &normal, glm::vec3 &position)
-{
+    HitData hd;
 
     float closest = MAXFLOAT;
     Object *closest_object;
-    bool hit = false;
+    hd.hit = false;
 
     for (int i = 0; i < count; ++i)
     {
 
-        glm::vec3 normal_;
-        glm::vec3 position_;
+        auto id = intersectObject(objects[i], start, direction);
 
-        if (intersectObject(objects[i], start, direction, t, normal_, position_) && t < closest)
+        if (id.hit && id.t0 < closest)
         {
-            closest = t;
+            closest = id.t0;
             closest_object = objects + i;
-            normal = normal_;
-            position = position_;
-            hit = true;
+            hd.position = id.position;
+            hd.normal = id.normal;
+            hd.hit = true;
         }
     }
 
-    hit_object = closest_object;
-    t = closest;
-    return hit;
-}
-
-__host__ __device__ bool intersectMany(Object *objects, size_t count, glm::vec3 start, glm::vec3 direction)
-{
-
-    float t_;
-    Object *ob;
-    glm::vec3 n;
-    glm::vec3 p;
-
-    return intersectMany(objects, count, start, direction, t_, ob, n, p);
+    hd.object = closest_object;
+    hd.t = closest;
+    return hd;
 }
