@@ -94,7 +94,6 @@ __host__ __device__ void render(unsigned char *image, glm::mat4 view_matrix, Obj
 
     for (int i = 0; i < 10; i++)
     {
-
         color += trace(start, direction, objects, num_objects, i + time);
     }
 
@@ -199,6 +198,11 @@ int main(int argc, char **argv)
                 last_x = event.mouseMove.x;
                 last_y = event.mouseMove.y;
             }
+        }
+
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::W))
+        {
+            view_matrix = glm::translate(view_matrix, glm::inverse(glm::mat3(view_matrix)) * glm::vec3(0.0, 0.0, 1.0));
         }
 
         window.clear();
