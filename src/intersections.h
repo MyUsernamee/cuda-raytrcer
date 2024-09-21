@@ -89,9 +89,8 @@ __host__ __device__ IntersectionData intersectPlane(glm::vec3 start, glm::vec3 d
         return id;
     }
 
-    id.normal = glm::vec3(0.0, 1.0, 0.0);
-    id.hit = true;
-    id.t0 = L / B;
+    id.normal = glm::vec3(0.0, 1.0, 0.0) * (L < 0 ? -1.0f : 1.0f);
+    id.t0 = L / -B * 0.999;
     id.t1 = id.t0;
     id.position = start + direction * id.t0;
     id.hit = id.t0 > 0;
@@ -100,8 +99,8 @@ __host__ __device__ IntersectionData intersectPlane(glm::vec3 start, glm::vec3 d
 
 __host__ __device__ IntersectionData intersectObject(Object object, glm::vec3 start, glm::vec3 direction)
 {
-    glm::vec4 local_start = (object.transform) * glm::vec4(start, 1.0);
-    direction = glm::mat3(object.transform) * direction;
+    glm::vec4 local_start = glm::inverse(object.transform) * glm::vec4(start, 1.0);
+    direction = glm::inverse(glm::mat3(object.transform)) * direction;
 
     IntersectionData hit;
     switch (object.type)
@@ -118,8 +117,8 @@ __host__ __device__ IntersectionData intersectObject(Object object, glm::vec3 st
         break;
     }
 
-    hit.normal = glm::inverse(glm::mat3(object.transform)) * hit.normal;
-    hit.position = glm::vec3(glm::inverse(object.transform) * glm::vec4(hit.position, 1.0));
+    hit.normal = (glm::mat3(object.transform)) * hit.normal;
+    hit.position = (object.transform) * glm::vec4(hit.position, 1.0);
     return hit;
 }
 

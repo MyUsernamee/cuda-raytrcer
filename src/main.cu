@@ -11,20 +11,35 @@
 #include <sstream>
 #include <curand.h>
 
-__host__ __device__ float rand(glm::vec3 co)
+__host__ __device__ float rand(float seed)
 {
     float a_;
-    return modf((float)(sin(dot(co, glm::vec3(12415.9898, 7318.233, 16126.2512))) * 43758.5453), &a_);
+    return modf((float)(cos(seed * 23293.0) * 31601.0), &a_);
 }
 
-__device__ __host__ void
-setColor(unsigned char *image, glm::vec4 color, int x, int y, int width, int height)
+__host__ __device__ float rand(glm::vec3 a)
+{
+    return rand(dot(a, glm::vec3(1.0)));
+}
+
+__host__ __device__ glm::vec3 rand_vec(float seed)
 {
 
-    image[((y * width) + x) * 4] = max(min(color.x * 255, 255.0), 0.0);
-    image[((y * width) + x) * 4 + 1] = max(min(color.y * 255, 255.0), 0.0);
-    image[((y * width) + x) * 4 + 2] = max(min(color.z * 255, 255.0), 0.0);
-    image[((y * width) + x) * 4 + 3] = max(min(color.w * 255, 255.0), 0.0);
+    return glm::vec3(rand(seed), rand(rand(seed)), rand(rand(rand(seed))));
+}
+
+__host__ __device__ glm::vec3 rand_vec(glm::vec3 a)
+{
+    return rand_vec(dot(a, glm::vec3(1.0)));
+}
+
+__device__ __host__ void setColor(unsigned char *image, glm::vec4 color, int x, int y, int width, int height)
+{
+
+    image[((y * width) + x) * 4] = max(min(color.x * 255.0, 255.0), 0.0);
+    image[((y * width) + x) * 4 + 1] = max(min(color.y * 255.0, 255.0), 0.0);
+    image[((y * width) + x) * 4 + 2] = max(min(color.z * 255.0, 255.0), 0.0);
+    image[((y * width) + x) * 4 + 3] = max(min(color.w * 255.0, 255.0), 0.0);
 }
 
 __host__ __device__ glm::vec3 sample(float u1, float u2)
@@ -53,7 +68,7 @@ __host__ __device__ glm::vec3 rotate_towards(glm::vec3 reference, glm::vec3 targ
     return right * target.x + up * target.y + reference * target.z;
 }
 
-__host__ __device__ glm::vec3 trace(glm::vec3 start, glm::vec3 direction, Object *objects, size_t num_objects, float seed)
+__host__ __device__ glm::vec3 trace(glm::vec3 start, glm::vec3 direction, Object *objects, size_t *lights, size_t num_lights, size_t num_objects, float seed)
 {
 
     glm::vec3 accumulated_light = glm::vec3(0.0);
@@ -66,11 +81,31 @@ __host__ __device__ glm::vec3 trace(glm::vec3 start, glm::vec3 direction, Object
         if (!hit.hit)
             break;
 
+        if (hit.object->is_light)
+        {
+            accumulated_light += bounced_light * hit.object->color;
+            break;
+        }
+
         bounced_light *= hit.object->color;
 
-        auto shadow_hit = intersectMany(objects, num_objects, hit.position + hit.normal * 0.00001f, glm::vec3(0.0, 1.0, 0.0));
+        glm::vec3 light = glm::vec3(0.0);
 
-        accumulated_light += bounced_light * (shadow_hit.hit ? 0.0f : glm::dot(hit.normal, glm::vec3(0.0, 1.0, 0.0)));
+        for (int light_index = 0; light_index < num_lights; light_index++)
+        {
+
+            auto light_position = rand_vec(hit.position) * 2.0f - glm::vec3(1.0);
+            light_position = (objects[lights[light_index]]).transform * glm::vec4(light_position, 1.0);
+
+            auto id = intersectMany(objects, num_objects, hit.position + hit.normal * 0.0001f, glm::normalize(light_position - hit.position));
+
+            if (id.hit && id.object == objects + lights[light_index] && id.t < glm::distance(light_position, hit.position))
+            {
+                light += id.object->color;
+            }
+        }
+
+        accumulated_light += bounced_light * light;
 
         start = hit.position;
         direction = rotate_towards(hit.normal, sample(rand(hit.position + seed), rand(glm::vec3(hit.position.x + seed, rand(hit.position + seed), hit.position.z))));
@@ -87,14 +122,28 @@ __host__ __device__ void render(unsigned char *image, glm::mat4 view_matrix, Obj
     double x_scaled = ((float)x / (float)width - 0.5) * 2 * aspect_ratio;
     double y_scaled = ((float)y / (float)height - 0.5) * 2;
 
-    glm::vec3 direction = glm::normalize(glm::mat3(glm::inverse(view_matrix)) * glm::vec3(-x_scaled, -y_scaled, -1.0));
-    glm::vec3 start = glm::vec3(view_matrix[3]);
+    glm::vec3 direction = glm::normalize(glm::mat3(glm::inverse(view_matrix)) * glm::vec3(-x_scaled, -y_scaled, 1.0));
+    glm::vec3 start = glm::vec3(glm::inverse(view_matrix)[3]);
 
     glm::vec3 color = glm::vec3(0.0);
 
+    size_t lights[8];
+    size_t num_lights = 0;
+
+    for (int i = 0; i < num_objects; i++)
+    {
+
+        if (objects[i].is_light)
+        {
+
+            lights[num_lights] = i;
+            num_lights++;
+        }
+    }
+
     for (int i = 0; i < 10; i++)
     {
-        color += trace(start, direction, objects, num_objects, i + time);
+        color += trace(start, direction, objects, lights, num_lights, num_objects, rand());
     }
 
     setColor(image, glm::vec4(color / 10.0f, 1.0), x, y, width, height);
@@ -144,12 +193,13 @@ int main(int argc, char **argv)
     unsigned char *d_image;
     cudaMalloc(&d_image, image_size);
 
-    glm::mat4 view_matrix = glm::lookAt(glm::vec3(0.0, 0.0, -3.0), glm::vec3(0.0), glm::vec3(0.0, 1.0, 0.0));
+    glm::mat4 view_matrix = glm::lookAtLH(glm::vec3(0.0, 0.0, -3.0), glm::vec3(0.0), glm::vec3(0.0, 1.0, 0.0));
+    // Goes from World to local
 
     float _;
     glm::vec3 _2;
 
-    static const size_t num_objects = 2;
+    static const size_t num_objects = 3;
 
     Object *objects = new Object[num_objects];
 
@@ -163,14 +213,18 @@ int main(int argc, char **argv)
         glm::vec3(1.0),
         false,
         ObjectType::Plane};
+    objects[2] = Object{
+        glm::translate(glm::mat4(1.0), glm::vec3(1.0, 0.0, 0.0)),
+        glm::vec3(1.0, 1.0, 1.0) * 10.0f,
+        true,
+        ObjectType::Sphere};
 
     Object *d_objects;
     cudaMalloc(&d_objects, sizeof(Object) * num_objects);
 
     cudaMemcpy(d_objects, objects, num_objects * sizeof(Object), cudaMemcpyHostToDevice);
 
-    float last_x = 0;
-    float last_y = 0;
+    sf::Vector2i mouse_delta;
 
     sf::Clock fps_timer;
     double last_time = 0.0;
@@ -180,6 +234,12 @@ int main(int argc, char **argv)
 
     window.setMouseCursorGrabbed(true);
     sf::Mouse::setPosition(window.getPosition() + sf::Vector2i(window.getSize()) / 2);
+
+    // Print view matrix
+    printf("%f %f %f %f\n", view_matrix[0][0], view_matrix[0][1], view_matrix[0][2], view_matrix[0][3]);
+    printf("%f %f %f %f\n", view_matrix[1][0], view_matrix[1][1], view_matrix[1][2], view_matrix[1][3]);
+    printf("%f %f %f %f\n", view_matrix[2][0], view_matrix[2][1], view_matrix[2][2], view_matrix[2][3]);
+    printf("%f %f %f %f\n", view_matrix[3][0], view_matrix[3][1], view_matrix[3][2], view_matrix[3][3]);
 
     while (window.isOpen())
     {
@@ -191,23 +251,28 @@ int main(int argc, char **argv)
 
             if (event.type == sf::Event::MouseMoved)
             {
-
-                view_matrix = glm::rotate(view_matrix, -((float)event.mouseMove.x - (float)last_x) * 0.005f, glm::vec3(0.0, 1.0, 0.0));
-                view_matrix = glm::rotate(view_matrix, ((float)event.mouseMove.y - (float)last_y) * 0.005f, glm::vec3(glm::inverse(view_matrix)[0]));
-
-                last_x = event.mouseMove.x;
-                last_y = event.mouseMove.y;
             }
         }
 
+        if (window.hasFocus())
+        {
+            sf::Vector2i center(window.getSize().x / 2, window.getSize().y / 2);
+            mouse_delta = sf::Mouse::getPosition(window) - center;
+            sf::Mouse::setPosition(center, window);
+
+            glm::mat4 rotation = glm::mat4(glm::rotate(glm::mat4(1.0), mouse_delta.y / 100.f, glm::vec3(1.0, 0.0, 0.0)));
+            rotation = glm::mat4(glm::rotate(rotation, mouse_delta.x / 100.f, glm::vec3(0.0, 1.0, 0.0)));
+
+            view_matrix = rotation * view_matrix;
+        }
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::W))
         {
-            view_matrix = glm::translate(view_matrix, glm::inverse(glm::mat3(view_matrix)) * glm::vec3(0.0, 0.0, 1.0));
+            view_matrix = glm::translate(view_matrix, glm::inverse(glm::mat3(view_matrix)) * glm::vec3(0.0, 0.0, -0.01));
         }
 
         window.clear();
 
-        std::cout << 1.0f / (float)last_time << std::endl;
+        // std::cout << 1.0f / (float)last_time << std::endl;
 
         makeWhite<<<numBlocks, threadsperBlock>>>(d_image, view_matrix, d_objects, num_objects, width, height, clock.getElapsedTime().asSeconds());
 
@@ -215,7 +280,7 @@ int main(int argc, char **argv)
         // {
         //     for (int y = 0; y < height; ++y)
         //     {
-        //         render(h_image, view_matrix, objects, num_objects, x, y, width, height);
+        //         render(h_image, view_matrix, objects, num_objects, x, y, width, height, 0.0);
         //     }
         // }
 
