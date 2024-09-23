@@ -21,6 +21,7 @@ struct Object
 
     glm::mat4 transform;
     glm::vec3 color;
+    float roughness;
     bool is_light;
     ObjectType type;
 
@@ -93,14 +94,18 @@ __host__ __device__ IntersectionData intersectPlane(glm::vec3 start, glm::vec3 d
     id.t0 = L / -B * 0.999;
     id.t1 = id.t0;
     id.position = start + direction * id.t0;
-    id.hit = id.t0 > 0;
+    id.hit = (id.t0 > 0 && abs(id.position.x) < 1.0 && abs(id.position.z) < 1.0);
     return id;
 }
 
 __host__ __device__ IntersectionData intersectObject(Object object, glm::vec3 start, glm::vec3 direction)
 {
     glm::vec4 local_start = glm::inverse(object.transform) * glm::vec4(start, 1.0);
+    float magnitude_before_transformation = 1.0; // Assume normalized vector
     direction = glm::inverse(glm::mat3(object.transform)) * direction;
+    float magnitude_after_transformation = glm::length(direction);
+    float size_change = magnitude_before_transformation / magnitude_after_transformation;
+    direction = glm::normalize(direction);
 
     IntersectionData hit;
     switch (object.type)
@@ -117,7 +122,9 @@ __host__ __device__ IntersectionData intersectObject(Object object, glm::vec3 st
         break;
     }
 
-    hit.normal = (glm::mat3(object.transform)) * hit.normal;
+    hit.t0 = hit.t0 * size_change;
+    hit.t1 = hit.t0 * size_change;
+    hit.normal = glm::normalize((glm::mat3(object.transform)) * hit.normal);
     hit.position = (object.transform) * glm::vec4(hit.position, 1.0);
     return hit;
 }
